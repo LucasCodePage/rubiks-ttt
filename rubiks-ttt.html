@@ -1,0 +1,1154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rubik's Tic-Tac-Toe</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  display: flex; flex-direction: column;
+  height: 100vh; background: #1a1a1a; color: #eee;
+  font-family: 'Segoe UI', sans-serif; overflow: hidden;
+}
+#status-bar {
+  padding: 10px 18px; font-size: 1.05rem; flex-shrink: 0;
+  background: #222; border-bottom: 1px solid #3a3a3a;
+  display: flex; align-items: center; gap: 12px; min-height: 44px;
+}
+#player-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: 50%; font-weight: bold;
+  font-size: 1rem; flex-shrink: 0;
+}
+#player-badge.X { background: #1a3a8a; color: #7aadff; }
+#player-badge.O { background: #8a1a1a; color: #ff8a8a; }
+#player-badge.draw { background: #2a2a2a; color: #aaa; }
+#status-text { flex: 1; }
+#canvas-container {
+  flex: 1; position: relative; overflow: hidden; min-height: 0;
+}
+#canvas-container canvas { display: block; width: 100% !important; height: 100% !important; }
+#move-buttons {
+  display: flex; gap: 5px; padding: 9px 12px;
+  background: #222; border-top: 1px solid #3a3a3a;
+  flex-wrap: wrap; flex-shrink: 0; justify-content: center; align-items: center;
+}
+#move-buttons button {
+  padding: 7px 13px; font-size: 0.9rem; cursor: pointer;
+  background: #2c2c2c; color: #ddd; border: 1px solid #4a4a4a;
+  border-radius: 5px; transition: background 0.12s, border-color 0.12s;
+  font-family: monospace; font-weight: bold; min-width: 40px;
+}
+#move-buttons button:disabled { opacity: 0.35; cursor: not-allowed; }
+#move-buttons button:not(:disabled):hover { background: #444; border-color: #777; }
+#move-buttons button:not(:disabled):active { background: #555; }
+.move-sep { width: 1px; background: #3a3a3a; align-self: stretch; margin: 0 3px; }
+#ai-toggle-btn {
+  padding: 5px 13px; font-size: 0.82rem; cursor: pointer; flex-shrink: 0;
+  border-radius: 5px; border: 1px solid #555; transition: all 0.15s;
+}
+#ai-toggle-btn.ai-off    { background: #2c2c2c; color: #666; }
+#ai-toggle-btn.ai-easy   { background: #1a3a1a; color: #7ddf7d; border-color: #3a7a3a; }
+#ai-toggle-btn.ai-medium { background: #2e2b10; color: #d4c96a; border-color: #6a5e2a; }
+#ai-toggle-btn.ai-hard   { background: #3a1a1a; color: #df7d7d; border-color: #7a3a3a; }
+#overlay {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.55); gap: 24px; z-index: 10;
+  pointer-events: none; /* let mouse events reach the canvas for rotation */
+}
+#overlay.hidden { display: none; }
+#overlay-message, #new-game-btn { pointer-events: auto; }
+#overlay-message {
+  font-size: 2.4rem; font-weight: bold; letter-spacing: 1px;
+  text-shadow: 0 2px 12px rgba(0,0,0,0.8);
+}
+#overlay-message.X { color: #7aadff; }
+#overlay-message.O { color: #ff8a8a; }
+#overlay-message.draw { color: #aaa; }
+#new-game-btn {
+  padding: 11px 34px; font-size: 1.05rem;
+  background: #333; border: 1px solid #777; color: #eee;
+  border-radius: 7px; cursor: pointer; transition: background 0.15s;
+}
+#new-game-btn:hover { background: #555; }
+</style>
+</head>
+<body>
+
+<div id="status-bar">
+  <div id="player-badge" class="X">X</div>
+  <div id="status-text">Player X — Click any white sticker to place your mark</div>
+  <button id="ai-toggle-btn" class="ai-off">vs AI</button>
+</div>
+
+<div id="canvas-container">
+  <div id="overlay" class="hidden">
+    <div id="overlay-message"></div>
+    <button id="new-game-btn">New Game</button>
+  </div>
+</div>
+
+<div id="move-buttons">
+  <!-- populated by JS -->
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script>
+// ─── Constants ────────────────────────────────────────────────────────────────
+const CUBIE_SIZE    = 0.92;
+const STICKER_W     = 0.82;
+const STICKER_D     = 0.05;
+const STICKER_OFF   = CUBIE_SIZE / 2 + STICKER_D / 2 + 0.001; // slight gap
+const ANIM_MS       = 380;
+const FACES         = ['U','D','F','B','L','R'];
+const WIN_LINES     = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
+
+// Move definitions: layer axis/value, animation axis, CW angle, position transform, face map
+const MOVE_DEFS = {
+  U: { layer:'y', value: 1, axis:'y', cwAngle: Math.PI/2,
+       pos: (x,y,z)=>[ z, y,-x],
+       faceMap: {F:'R',R:'B',B:'L',L:'F',U:'U',D:'D'} },
+  D: { layer:'y', value:-1, axis:'y', cwAngle:-Math.PI/2,
+       pos: (x,y,z)=>[-z, y, x],
+       faceMap: {F:'L',L:'B',B:'R',R:'F',U:'U',D:'D'} },
+  F: { layer:'z', value: 1, axis:'z', cwAngle: Math.PI/2,
+       pos: (x,y,z)=>[ y,-x, z],
+       faceMap: {U:'R',R:'D',D:'L',L:'U',F:'F',B:'B'} },
+  B: { layer:'z', value:-1, axis:'z', cwAngle:-Math.PI/2,
+       pos: (x,y,z)=>[-y, x, z],
+       faceMap: {U:'L',L:'D',D:'R',R:'U',F:'F',B:'B'} },
+  R: { layer:'x', value: 1, axis:'x', cwAngle: Math.PI/2,
+       pos: (x,y,z)=>[ x, z,-y],
+       faceMap: {U:'B',B:'D',D:'F',F:'U',R:'R',L:'L'} },
+  L: { layer:'x', value:-1, axis:'x', cwAngle:-Math.PI/2,
+       pos: (x,y,z)=>[ x,-z, y],
+       faceMap: {U:'F',F:'D',D:'B',B:'U',R:'R',L:'L'} },
+};
+
+// ─── Game state ───────────────────────────────────────────────────────────────
+let cubies        = [];
+let gamePhase     = 'PLACE'; // PLACE | MOVE | ANIMATING | GAME_OVER
+let currentPlayer = 'X';
+
+// ─── AI state ─────────────────────────────────────────────────────────────────
+let aiDifficulty = 'off'; // 'off' | 'easy' | 'medium' | 'hard'
+const ALL_MOVES = FACES.flatMap(f => [{face:f,cw:true},{face:f,cw:false}]);
+
+// ─── Marked cubie state ───────────────────────────────────────────────────────
+let markedCubieIndex  = null;
+let markedCubieOutline = null;
+let gameWinner        = null;
+let currentValidFaces = [];
+let winLineMesh       = null;
+
+// ─── Valid face helpers ───────────────────────────────────────────────────────
+function getValidFaces(pos) {
+  const faces = [];
+  if (pos.y ===  1) faces.push('U');
+  if (pos.y === -1) faces.push('D');
+  if (pos.z ===  1) faces.push('F');
+  if (pos.z === -1) faces.push('B');
+  if (pos.x ===  1) faces.push('R');
+  if (pos.x === -1) faces.push('L');
+  return faces;
+}
+
+// ─── Hover state ──────────────────────────────────────────────────────────────
+let arrowTexCW = null, arrowTexCCW = null;
+const arrowMeshes = {}; // face -> THREE.Mesh (one plane per face)
+const sideArrowMeshes = {}; // "U_0".."U_3" etc -> THREE.Mesh (strip per side face per layer)
+
+// For each layer: 4 entries of [sideFace, [px,py,pz], [rx,ry,rz], cwZRot]
+// cwZRot is the mesh z-rotation for CW direction; CCW = cwZRot + π.
+// Derived by solving: Rbase * Rz(cwZRot) * (1,0,0) = world direction stickers travel.
+// U/D use only 0 and π (horizontal movement, immune to sign issue).
+// F/B R-strips and all R/L layer strips require negated ±π/2 vs naive guess.
+const SIDE_ARROW_DEFS = {
+  U: [
+    ['F', [0,    1.0,  1.56], [0,            0, 0],  0          ],
+    ['R', [1.56, 1.0,  0   ], [0,  Math.PI/2, 0],   0          ],
+    ['B', [0,    1.0, -1.56], [0,  Math.PI,   0],   0          ],
+    ['L', [-1.56,1.0,  0   ], [0, -Math.PI/2, 0],   0          ],
+  ],
+  D: [
+    ['F', [0,   -1.0,  1.56], [0,            0, 0],  Math.PI   ],
+    ['R', [1.56,-1.0,  0   ], [0,  Math.PI/2, 0],   Math.PI   ],
+    ['B', [0,   -1.0, -1.56], [0,  Math.PI,   0],   Math.PI   ],
+    ['L', [-1.56,-1.0, 0   ], [0, -Math.PI/2, 0],   Math.PI   ],
+  ],
+  F: [
+    ['U', [0,    1.56, 1.0 ], [-Math.PI/2, 0, 0],   0          ],
+    ['D', [0,   -1.56, 1.0 ], [ Math.PI/2, 0, 0],   Math.PI   ],
+    ['R', [1.56, 0,    1.0 ], [0,  Math.PI/2, 0],  -Math.PI/2 ],
+    ['L', [-1.56,0,    1.0 ], [0, -Math.PI/2, 0],   Math.PI/2 ],
+  ],
+  B: [
+    ['U', [0,    1.56,-1.0 ], [-Math.PI/2, 0, 0],   Math.PI   ],
+    ['D', [0,   -1.56,-1.0 ], [ Math.PI/2, 0, 0],   0          ],
+    ['R', [1.56, 0,   -1.0 ], [0,  Math.PI/2, 0],   Math.PI/2 ],
+    ['L', [-1.56,0,   -1.0 ], [0, -Math.PI/2, 0],  -Math.PI/2 ],
+  ],
+  R: [
+    ['U', [1.0,  1.56, 0   ], [-Math.PI/2, 0, 0],   Math.PI/2 ],
+    ['D', [1.0, -1.56, 0   ], [ Math.PI/2, 0, 0],   Math.PI/2 ],
+    ['F', [1.0,  0,    1.56], [0,           0, 0],   Math.PI/2 ],
+    ['B', [1.0,  0,   -1.56], [0,  Math.PI,  0],   -Math.PI/2 ],
+  ],
+  L: [
+    ['U', [-1.0,  1.56, 0   ], [-Math.PI/2, 0, 0], -Math.PI/2 ],
+    ['D', [-1.0, -1.56, 0   ], [ Math.PI/2, 0, 0], -Math.PI/2 ],
+    ['F', [-1.0,  0,    1.56], [0,           0, 0], -Math.PI/2 ],
+    ['B', [-1.0,  0,   -1.56], [0,  Math.PI,  0],   Math.PI/2 ],
+  ],
+};
+
+// ─── Three.js globals ─────────────────────────────────────────────────────────
+let scene, camera, renderer, orbitGroup;
+const raycaster = new THREE.Raycaster();
+const mouse2d   = new THREE.Vector2();
+
+// ─── Texture cache ────────────────────────────────────────────────────────────
+function makeTexture(mark) {
+  const sz  = 256;
+  const cvs = document.createElement('canvas');
+  cvs.width = cvs.height = sz;
+  const ctx = cvs.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, sz, sz);
+  if (mark === 'X') {
+    ctx.strokeStyle = '#4488ff';
+    ctx.lineWidth   = 38;
+    ctx.lineCap     = 'round';
+    ctx.beginPath(); ctx.moveTo(52,52);  ctx.lineTo(204,204); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(204,52); ctx.lineTo(52,204);  ctx.stroke();
+  } else if (mark === 'O') {
+    ctx.strokeStyle = '#ff4444';
+    ctx.lineWidth   = 38;
+    ctx.lineCap     = 'round';
+    ctx.beginPath(); ctx.arc(128, 128, 78, 0, Math.PI*2); ctx.stroke();
+  }
+  const tex = new THREE.CanvasTexture(cvs);
+  return tex;
+}
+
+const textureCache = { empty: null, X: null, O: null };
+
+// ─── Arrow textures ───────────────────────────────────────────────────────────
+function drawArrowHead(ctx, ex, ey, tx, ty, len, spread) {
+  // tip at (ex,ey), motion direction (tx,ty); draws two lines going backward+spread
+  const bx = -tx, by = -ty;
+  const cs = Math.cos(spread), sn = Math.sin(spread);
+  ctx.beginPath(); ctx.moveTo(ex, ey);
+  ctx.lineTo(ex + (bx*cs - by*sn)*len, ey + (bx*sn + by*cs)*len); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(ex, ey);
+  ctx.lineTo(ex + (bx*cs + by*sn)*len, ey + (-bx*sn + by*cs)*len); ctx.stroke();
+}
+
+function makeArrowTexture(isCW) {
+  const sz = 512;
+  const cvs = document.createElement('canvas');
+  cvs.width = cvs.height = sz;
+  const ctx = cvs.getContext('2d');
+  const cx = sz/2, cy = sz/2, r = sz * 0.3;
+
+  ctx.strokeStyle = 'rgba(255, 215, 40, 0.95)';
+  ctx.lineWidth   = sz * 0.062;
+  ctx.lineCap     = 'round';
+
+  // 3 arc segments spaced 120° apart, each spanning ~66° with an arrowhead at the tip
+  const span = Math.PI * 2 / 3 * 0.55;
+  for (let i = 0; i < 3; i++) {
+    const base = i * Math.PI * 2 / 3;
+    if (isCW) {
+      const sa = base, ea = base + span;
+      ctx.beginPath(); ctx.arc(cx, cy, r, sa, ea, false); ctx.stroke();
+      drawArrowHead(ctx, cx+r*Math.cos(ea), cy+r*Math.sin(ea),
+                    -Math.sin(ea), Math.cos(ea), sz*0.09, 0.42);
+    } else {
+      const sa = base + span, ea = base;
+      ctx.beginPath(); ctx.arc(cx, cy, r, sa, ea, true); ctx.stroke();
+      drawArrowHead(ctx, cx+r*Math.cos(ea), cy+r*Math.sin(ea),
+                    Math.sin(ea), -Math.cos(ea), sz*0.09, 0.42);
+    }
+  }
+  return new THREE.CanvasTexture(cvs);
+}
+
+function makeStripArrowTexture() {
+  const sz = 256;
+  const cvs = document.createElement('canvas');
+  cvs.width = cvs.height = sz;
+  const ctx = cvs.getContext('2d');
+  ctx.strokeStyle = 'rgba(255,215,40,0.95)';
+  ctx.lineWidth = sz * 0.11;
+  ctx.lineCap = 'round';
+  // Short bold stem from ~25% to ~60%, arrowhead at 60%
+  ctx.beginPath(); ctx.moveTo(sz*0.25, sz*0.5); ctx.lineTo(sz*0.60, sz*0.5); ctx.stroke();
+  drawArrowHead(ctx, sz*0.60, sz*0.5, 1, 0, sz*0.28, 0.42);
+  return new THREE.CanvasTexture(cvs);
+}
+
+// ─── Arrow mesh construction (called after initScene) ─────────────────────────
+function buildArrowMeshes() {
+  arrowTexCW  = makeArrowTexture(true);
+  arrowTexCCW = makeArrowTexture(false);
+
+  // Each plane sits just outside the face it represents, normal pointing outward.
+  // Plane default normal = +Z. Rotations bring normals to face outward:
+  //   U→+Y: rx=-π/2  D→-Y: rx=+π/2  F→+Z: no rot  B→-Z: ry=π  R→+X: ry=+π/2  L→-X: ry=-π/2
+  const OFF = 1.56; // just in front of sticker surface (~1.51)
+  const cfg = {
+    U: { p:[0, OFF,0],  r:[-Math.PI/2, 0, 0]         },
+    D: { p:[0,-OFF,0],  r:[ Math.PI/2, 0, 0]         },
+    F: { p:[0, 0, OFF], r:[0, 0, 0]                   },
+    B: { p:[0, 0,-OFF], r:[0, Math.PI, 0]             },
+    R: { p:[ OFF,0,0],  r:[0,  Math.PI/2, 0]          },
+    L: { p:[-OFF,0,0],  r:[0, -Math.PI/2, 0]          },
+  };
+
+  const geo = new THREE.PlaneGeometry(2.9, 2.9);
+  FACES.forEach(face => {
+    const mat = new THREE.MeshBasicMaterial({
+      map: arrowTexCW, transparent: true, depthWrite: false,
+      side: THREE.FrontSide, opacity: 1, // FrontSide: only visible when face points toward camera
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    const { p, r } = cfg[face];
+    mesh.position.set(...p);
+    mesh.rotation.set(...r);
+    mesh.visible     = false;
+    mesh.renderOrder = 2;
+    orbitGroup.add(mesh);
+    arrowMeshes[face] = mesh;
+  });
+}
+
+function buildSideArrowMeshes() {
+  const stripTex = makeStripArrowTexture();
+  const geo = new THREE.PlaneGeometry(0.9, 0.9);
+  FACES.forEach(layer => {
+    SIDE_ARROW_DEFS[layer].forEach(([, pos, rot], i) => {
+      const mat = new THREE.MeshBasicMaterial({
+        map: stripTex, transparent: true, depthWrite: false,
+        side: THREE.FrontSide, opacity: 0.95,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(...pos);
+      mesh.rotation.set(...rot);
+      mesh.visible = false;
+      mesh.renderOrder = 2;
+      orbitGroup.add(mesh);
+      sideArrowMeshes[`${layer}_${i}`] = mesh;
+    });
+  });
+}
+
+// ─── Hover helpers ────────────────────────────────────────────────────────────
+const GLOW_COLOR = new THREE.Color(0xffcc22);
+
+function setLayerHover(face, isCW) {
+  clearLayerHover();
+  const def = MOVE_DEFS[face];
+  // Emissive glow on every sticker in the layer
+  cubies.filter(c => c.pos[def.layer] === def.value).forEach(c => {
+    Object.values(c.stickerMeshes).forEach(sm => {
+      sm.material.emissive          = GLOW_COLOR;
+      sm.material.emissiveIntensity = 0.6;
+    });
+  });
+  // Show side-face strip arrows
+  SIDE_ARROW_DEFS[face].forEach(([, , , cwZRot], i) => {
+    const m = sideArrowMeshes[`${face}_${i}`];
+    if (!m) return;
+    m.rotation.z = isCW ? cwZRot : cwZRot + Math.PI;
+    m.visible = true;
+  });
+}
+
+function clearLayerHover() {
+  cubies.forEach(c => {
+    Object.values(c.stickerMeshes).forEach(sm => {
+      sm.material.emissive          = new THREE.Color(0x000000);
+      sm.material.emissiveIntensity = 0;
+    });
+  });
+  Object.values(arrowMeshes).forEach(m => { if (m) m.visible = false; });
+  Object.values(sideArrowMeshes).forEach(m => { if (m) m.visible = false; });
+}
+
+// ─── Marked cubie outline ─────────────────────────────────────────────────────
+const outlineGeo = new THREE.EdgesGeometry(new THREE.BoxGeometry(CUBIE_SIZE + 0.08, CUBIE_SIZE + 0.08, CUBIE_SIZE + 0.08));
+const outlineMat = new THREE.LineBasicMaterial({ color: 0xff8800 });
+
+function showMarkedCubieOutline(cubieIdx) {
+  clearMarkedCubieOutline();
+  markedCubieOutline = new THREE.LineSegments(outlineGeo, outlineMat);
+  // Child of boxMesh so it animates with the cubie
+  cubies[cubieIdx].boxMesh.add(markedCubieOutline);
+}
+
+function clearMarkedCubieOutline() {
+  if (markedCubieOutline) {
+    if (markedCubieOutline.parent) markedCubieOutline.parent.remove(markedCubieOutline);
+    markedCubieOutline = null;
+  }
+}
+
+// ─── Cubie init ───────────────────────────────────────────────────────────────
+function initCubies() {
+  cubies = [];
+  for (let x = -1; x <= 1; x++) {
+    for (let y = -1; y <= 1; y++) {
+      for (let z = -1; z <= 1; z++) {
+        if (x===0 && y===0 && z===0) continue;
+        cubies.push({
+          pos: {x, y, z},
+          stickers: {
+            U: y=== 1 ? 'empty' : null,
+            D: y===-1 ? 'empty' : null,
+            F: z=== 1 ? 'empty' : null,
+            B: z===-1 ? 'empty' : null,
+            L: x===-1 ? 'empty' : null,
+            R: x=== 1 ? 'empty' : null,
+          },
+          boxMesh:      null,
+          stickerMeshes: {},
+        });
+      }
+    }
+  }
+}
+
+// ─── Three.js scene ───────────────────────────────────────────────────────────
+function initScene() {
+  const container = document.getElementById('canvas-container');
+  const w = container.clientWidth, h = container.clientHeight;
+
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x1a1a1a);
+
+  camera = new THREE.PerspectiveCamera(42, w / h, 0.1, 100);
+  camera.position.set(4, 3.2, 5.5);
+  camera.lookAt(0, 0, 0);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(w, h);
+  container.appendChild(renderer.domElement);
+
+  scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+  const dir = new THREE.DirectionalLight(0xffffff, 0.85);
+  dir.position.set(5, 8, 6);
+  scene.add(dir);
+  const dir2 = new THREE.DirectionalLight(0xffffff, 0.25);
+  dir2.position.set(-4, -3, -4);
+  scene.add(dir2);
+
+  orbitGroup = new THREE.Group();
+  scene.add(orbitGroup);
+
+  window.addEventListener('resize', () => {
+    const w2 = container.clientWidth, h2 = container.clientHeight;
+    camera.aspect = w2 / h2;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w2, h2);
+  });
+}
+
+// ─── Black cubie boxes ────────────────────────────────────────────────────────
+const boxGeo = new THREE.BoxGeometry(CUBIE_SIZE, CUBIE_SIZE, CUBIE_SIZE);
+const blackMat = new THREE.MeshLambertMaterial({ color: 0x111111 });
+
+function buildCubeMeshes() {
+  cubies.forEach((c, i) => {
+    if (c.boxMesh) orbitGroup.remove(c.boxMesh);
+    const mesh = new THREE.Mesh(boxGeo, blackMat);
+    mesh.position.set(c.pos.x, c.pos.y, c.pos.z);
+    mesh.userData.isBox = true;
+    orbitGroup.add(mesh);
+    c.boxMesh = mesh;
+  });
+}
+
+// ─── Sticker meshes ───────────────────────────────────────────────────────────
+const stickerGeo = new THREE.BoxGeometry(STICKER_W, STICKER_W, STICKER_D);
+
+function stickerMaterial(mark) {
+  return new THREE.MeshLambertMaterial({ map: textureCache[mark] });
+}
+
+// Place/orient a sticker mesh on the given face of a cubie at pos
+function positionStickerMesh(mesh, pos, face) {
+  const o = STICKER_OFF;
+  mesh.rotation.set(0, 0, 0);
+  switch (face) {
+    case 'U': mesh.position.set(pos.x, pos.y+o, pos.z); mesh.rotation.x=-Math.PI/2; break;
+    case 'D': mesh.position.set(pos.x, pos.y-o, pos.z); mesh.rotation.x= Math.PI/2; break;
+    case 'F': mesh.position.set(pos.x, pos.y, pos.z+o);                              break;
+    case 'B': mesh.position.set(pos.x, pos.y, pos.z-o); mesh.rotation.y= Math.PI;   break;
+    case 'R': mesh.position.set(pos.x+o, pos.y, pos.z); mesh.rotation.y= Math.PI/2; break;
+    case 'L': mesh.position.set(pos.x-o, pos.y, pos.z); mesh.rotation.y=-Math.PI/2; break;
+  }
+}
+
+function buildStickerMeshes() {
+  // Remove old
+  cubies.forEach(c => {
+    Object.values(c.stickerMeshes).forEach(m => orbitGroup.remove(m));
+    c.stickerMeshes = {};
+  });
+  // Recreate
+  cubies.forEach((c, i) => {
+    FACES.forEach(face => {
+      const val = c.stickers[face];
+      if (val === null) return;
+      const mesh = new THREE.Mesh(stickerGeo, stickerMaterial(val));
+      positionStickerMesh(mesh, c.pos, face);
+      mesh.userData = { cubieIndex: i, face, isSticker: true };
+      orbitGroup.add(mesh);
+      c.stickerMeshes[face] = mesh;
+    });
+  });
+}
+
+// ─── Move buttons ─────────────────────────────────────────────────────────────
+function buildMoveButtons() {
+  const container = document.getElementById('move-buttons');
+  container.innerHTML = '';
+  ['U','D','F','B','L','R'].forEach((face, idx) => {
+    if (idx > 0) {
+      const sep = document.createElement('div');
+      sep.className = 'move-sep';
+      container.appendChild(sep);
+    }
+    [true, false].forEach(isCW => {
+      const btn = document.createElement('button');
+      btn.textContent = isCW ? face : face + "'";
+      btn.dataset.face = face;
+      btn.disabled = true;
+      btn.addEventListener('click',      () => onMoveClick(face, isCW));
+      btn.addEventListener('mouseenter', () => { if (!btn.disabled) setLayerHover(face, isCW); });
+      btn.addEventListener('mouseleave', () => clearLayerHover());
+      container.appendChild(btn);
+    });
+  });
+}
+
+function setMoveButtonsEnabled(enabled) {
+  document.querySelectorAll('#move-buttons button').forEach(b => b.disabled = !enabled);
+}
+
+function setValidMoveButtons(validFaces) {
+  document.querySelectorAll('#move-buttons button').forEach(b => {
+    b.disabled = !validFaces.includes(b.dataset.face);
+  });
+}
+
+// ─── Drag controls ────────────────────────────────────────────────────────────
+let isDragging     = false;
+let prevMouse      = {x:0, y:0};
+let mouseDownPos   = {x:0, y:0};
+let mouseTotalDelta = 0;
+const DRAG_SENS    = 0.008;
+
+function initDragControls() {
+  const el = renderer.domElement;
+
+  function startDrag(cx, cy) {
+    isDragging      = true;
+    mouseDownPos    = {x:cx, y:cy};
+    prevMouse       = {x:cx, y:cy};
+    mouseTotalDelta = 0;
+  }
+  function moveDrag(cx, cy) {
+    if (!isDragging) return;
+    const dx = cx - prevMouse.x;
+    const dy = cy - prevMouse.y;
+    mouseTotalDelta += Math.abs(dx) + Math.abs(dy);
+    prevMouse = {x:cx, y:cy};
+    orbitGroup.rotation.y += dx * DRAG_SENS;
+    orbitGroup.rotation.x += dy * DRAG_SENS;
+    // clamp vertical
+    orbitGroup.rotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, orbitGroup.rotation.x));
+  }
+  function endDrag(e) {
+    if (!isDragging) return;
+    isDragging = false;
+    if (mouseTotalDelta < 5 && e) onCanvasClick(e);
+  }
+
+  el.addEventListener('mousedown',  e => { if (e.button===0) startDrag(e.clientX, e.clientY); });
+  el.addEventListener('mousemove',  e => moveDrag(e.clientX, e.clientY));
+  el.addEventListener('mouseup',    e => endDrag(e));
+  el.addEventListener('mouseleave', () => { isDragging = false; });
+
+  el.addEventListener('touchstart', e => startDrag(e.touches[0].clientX, e.touches[0].clientY), {passive:true});
+  el.addEventListener('touchmove',  e => moveDrag(e.touches[0].clientX, e.touches[0].clientY),  {passive:true});
+  el.addEventListener('touchend',   e => endDrag(e.changedTouches ? {clientX: e.changedTouches[0].clientX, clientY: e.changedTouches[0].clientY} : null));
+}
+
+// ─── Raycasting / click to place ──────────────────────────────────────────────
+function onCanvasClick(e) {
+  if (gamePhase !== 'PLACE') return;
+  if (aiDifficulty !== 'off' && currentPlayer === 'O') return; // AI's placement turn
+
+  const container = document.getElementById('canvas-container');
+  const rect = container.getBoundingClientRect();
+  mouse2d.x = ((e.clientX - rect.left) / rect.width)  *  2 - 1;
+  mouse2d.y = ((e.clientY - rect.top)  / rect.height) * -2 + 1;
+
+  raycaster.setFromCamera(mouse2d, camera);
+
+  const stickerMeshes = cubies.flatMap(c => Object.values(c.stickerMeshes));
+  const hits = raycaster.intersectObjects(stickerMeshes);
+  if (hits.length === 0) return;
+
+  const { cubieIndex, face } = hits[0].object.userData;
+  const cubie = cubies[cubieIndex];
+  if (cubie.stickers[face] !== 'empty') return;
+
+  // Place mark
+  cubie.stickers[face] = currentPlayer;
+  hits[0].object.material.map = textureCache[currentPlayer];
+  hits[0].object.material.needsUpdate = true;
+
+  // Opponent rotates — switch player and enter MOVE phase
+  markedCubieIndex = cubieIndex;
+  currentPlayer = currentPlayer === 'X' ? 'O' : 'X';
+  gamePhase = 'MOVE';
+
+  currentValidFaces = getValidFaces(cubies[cubieIndex].pos);
+  showMarkedCubieOutline(cubieIndex);
+  updateUI();
+
+  if (aiDifficulty !== 'off' && currentPlayer === 'O') aiRotateTurn(currentValidFaces);
+}
+
+// ─── Move execution ───────────────────────────────────────────────────────────
+function onMoveClick(face, isCW) {
+  if (gamePhase !== 'MOVE') return;
+  if (aiDifficulty !== 'off' && currentPlayer === 'O') return; // AI handles O's rotation
+  gamePhase = 'ANIMATING';
+  updateUI();
+  executeMoveAnimation(face, isCW);
+}
+
+function easeInOut(t) { return t < 0.5 ? 2*t*t : -1+(4-2*t)*t; }
+
+function applyPosCW(pos, face) {
+  const [nx,ny,nz] = MOVE_DEFS[face].pos(pos.x, pos.y, pos.z);
+  return {x: nx, y: ny, z: nz};
+}
+function applyPosCCW(pos, face) {
+  let p = applyPosCW(pos, face);
+  p = applyPosCW(p, face);
+  p = applyPosCW(p, face);
+  return p;
+}
+function applyFaceMap(stickers, faceMap) {
+  const next = {U:null,D:null,F:null,B:null,L:null,R:null};
+  for (const src of FACES) {
+    const dst = faceMap[src];
+    if (dst) next[dst] = stickers[src];
+  }
+  return next;
+}
+function applyFaceMapCCW(stickers, faceMap) {
+  const rev = {};
+  for (const [src,dst] of Object.entries(faceMap)) rev[dst] = src;
+  return applyFaceMap(stickers, rev);
+}
+
+function executeMoveAnimation(face, isCW) {
+  clearLayerHover(); // dismiss glow and arrow before animation
+  const def      = MOVE_DEFS[face];
+  const affected = cubies.filter(c => c.pos[def.layer] === def.value);
+
+  // Pivot lives inside orbitGroup so its axes match the data model
+  const pivot = new THREE.Group();
+  orbitGroup.add(pivot);
+
+  affected.forEach(c => {
+    pivot.attach(c.boxMesh);
+    Object.values(c.stickerMeshes).forEach(sm => pivot.attach(sm));
+  });
+
+  const targetAngle = isCW ? def.cwAngle : -def.cwAngle;
+  const startTime   = performance.now();
+
+  function step(now) {
+    const t      = Math.min((now - startTime) / ANIM_MS, 1);
+    pivot.rotation[def.axis] = easeInOut(t) * targetAngle;
+    if (t < 1) { requestAnimationFrame(step); return; }
+
+    pivot.rotation[def.axis] = targetAngle; // snap exact
+
+    // Reparent back to orbitGroup
+    affected.forEach(c => {
+      orbitGroup.attach(c.boxMesh);
+      Object.values(c.stickerMeshes).forEach(sm => orbitGroup.attach(sm));
+      // Fix float errors
+      c.boxMesh.position.x = Math.round(c.boxMesh.position.x);
+      c.boxMesh.position.y = Math.round(c.boxMesh.position.y);
+      c.boxMesh.position.z = Math.round(c.boxMesh.position.z);
+      c.boxMesh.rotation.set(0,0,0);
+      // Update data model
+      c.pos      = isCW ? applyPosCW(c.pos, face) : applyPosCCW(c.pos, face);
+      c.stickers = isCW ? applyFaceMap(c.stickers, def.faceMap)
+                        : applyFaceMapCCW(c.stickers, def.faceMap);
+    });
+    orbitGroup.remove(pivot);
+
+    // Rebuild sticker meshes from updated data model
+    buildStickerMeshes();
+
+    // Win check AFTER rotation
+    clearMarkedCubieOutline();
+    markedCubieIndex = null;
+    const winResult = findWin(cubies);
+    if (winResult) {
+      gamePhase  = 'GAME_OVER';
+      gameWinner = winResult.winner;
+      if (winResult.winner !== 'draw') showWinLine(winResult.face, winResult.line);
+      showWinner(winResult.winner);
+      updateUI();
+    } else if (isBoardFull(cubies)) {
+      gamePhase  = 'GAME_OVER';
+      gameWinner = 'draw';
+      showWinner('draw');
+      updateUI();
+    } else {
+      // currentPlayer stays the same — they now place next
+      gamePhase = 'PLACE';
+      updateUI();
+      if (aiDifficulty !== 'off' && currentPlayer === 'O') aiPlace();
+    }
+  }
+
+  requestAnimationFrame(step);
+}
+
+// ─── Win detection ────────────────────────────────────────────────────────────
+function getFaceStickersOrderedFrom(cs, face) {
+  const rel = cs.filter(c => c.stickers[face] !== null && c.stickers[face] !== undefined);
+  let sorted;
+  switch (face) {
+    case 'U': case 'D':
+      sorted = rel.slice().sort((a,b) => a.pos.z!==b.pos.z ? a.pos.z-b.pos.z : a.pos.x-b.pos.x); break;
+    case 'F':
+      sorted = rel.slice().sort((a,b) => a.pos.y!==b.pos.y ? b.pos.y-a.pos.y : a.pos.x-b.pos.x); break;
+    case 'B':
+      sorted = rel.slice().sort((a,b) => a.pos.y!==b.pos.y ? b.pos.y-a.pos.y : b.pos.x-a.pos.x); break;
+    case 'L':
+      sorted = rel.slice().sort((a,b) => a.pos.y!==b.pos.y ? b.pos.y-a.pos.y : a.pos.z-b.pos.z); break;
+    case 'R':
+      sorted = rel.slice().sort((a,b) => a.pos.y!==b.pos.y ? b.pos.y-a.pos.y : b.pos.z-a.pos.z); break;
+  }
+  return sorted.map(c => c.stickers[face]);
+}
+function getFaceStickersOrdered(face) { return getFaceStickersOrderedFrom(cubies, face); }
+
+function checkWinIn(cs) {
+  for (const face of FACES) {
+    const s = getFaceStickersOrderedFrom(cs, face);
+    if (s.length !== 9) continue;
+    for (const line of WIN_LINES) {
+      const [a,b,c] = line.map(i => s[i]);
+      if (a !== 'empty' && a === b && b === c) return a;
+    }
+  }
+  return null;
+}
+
+// Returns { winner, face, line } or null.
+// winner is 'X', 'O', or 'draw' (when both players complete a line simultaneously).
+function findWin(cs) {
+  let xWin = null, oWin = null;
+  for (const face of FACES) {
+    const s = getFaceStickersOrderedFrom(cs, face);
+    if (s.length !== 9) continue;
+    for (const line of WIN_LINES) {
+      const [a,b,c] = line.map(i => s[i]);
+      if (a !== 'empty' && a === b && b === c) {
+        if (a === 'X' && !xWin) xWin = { winner: 'X', face, line };
+        if (a === 'O' && !oWin) oWin = { winner: 'O', face, line };
+      }
+    }
+  }
+  if (xWin && oWin) return { winner: 'draw', face: xWin.face, line: xWin.line };
+  return xWin || oWin || null;
+}
+
+function isBoardFull(cs) {
+  return cs.every(c => Object.values(c.stickers).every(v => v === null || v !== 'empty'));
+}
+function checkWin() { return checkWinIn(cubies); }
+
+// Returns the 9 cubies for a face in the same order as getFaceStickersOrdered
+function getFaceCubiesOrdered(face) {
+  const rel = cubies.filter(c => c.stickers[face] !== null && c.stickers[face] !== undefined);
+  switch (face) {
+    case 'U': case 'D':
+      return rel.slice().sort((a,b) => a.pos.z!==b.pos.z ? a.pos.z-b.pos.z : a.pos.x-b.pos.x);
+    case 'F':
+      return rel.slice().sort((a,b) => a.pos.y!==b.pos.y ? b.pos.y-a.pos.y : a.pos.x-b.pos.x);
+    case 'B':
+      return rel.slice().sort((a,b) => a.pos.y!==b.pos.y ? b.pos.y-a.pos.y : b.pos.x-a.pos.x);
+    case 'L':
+      return rel.slice().sort((a,b) => a.pos.y!==b.pos.y ? b.pos.y-a.pos.y : a.pos.z-b.pos.z);
+    case 'R':
+      return rel.slice().sort((a,b) => a.pos.y!==b.pos.y ? b.pos.y-a.pos.y : b.pos.z-a.pos.z);
+  }
+}
+
+function getStickerWorldPos(cubie, face) {
+  const o = STICKER_OFF + 0.01; // sit just above the sticker surface
+  const p = cubie.pos;
+  switch (face) {
+    case 'U': return new THREE.Vector3(p.x, p.y + o, p.z);
+    case 'D': return new THREE.Vector3(p.x, p.y - o, p.z);
+    case 'F': return new THREE.Vector3(p.x, p.y, p.z + o);
+    case 'B': return new THREE.Vector3(p.x, p.y, p.z - o);
+    case 'R': return new THREE.Vector3(p.x + o, p.y, p.z);
+    case 'L': return new THREE.Vector3(p.x - o, p.y, p.z);
+  }
+}
+
+function showWinLine(face, lineIndices) {
+  clearWinLine();
+  const ordered = getFaceCubiesOrdered(face);
+  const p0 = getStickerWorldPos(ordered[lineIndices[0]], face);
+  const p2 = getStickerWorldPos(ordered[lineIndices[2]], face);
+  const dir = p2.clone().sub(p0).normalize();
+  const start = p0.clone().sub(dir.clone().multiplyScalar(0.38));
+  const end   = p2.clone().add(dir.clone().multiplyScalar(0.38));
+  const path  = new THREE.LineCurve3(start, end);
+  const geo   = new THREE.TubeGeometry(path, 1, 0.045, 8, false);
+  const mat   = new THREE.MeshBasicMaterial({ color: 0xffee44 });
+  winLineMesh = new THREE.Mesh(geo, mat);
+  orbitGroup.add(winLineMesh);
+}
+
+function clearWinLine() {
+  if (winLineMesh) {
+    orbitGroup.remove(winLineMesh);
+    winLineMesh.geometry.dispose();
+    winLineMesh.material.dispose();
+    winLineMesh = null;
+  }
+}
+
+// ─── AI opponent ──────────────────────────────────────────────────────────────
+function cloneCubiesState() {
+  return cubies.map(c => ({ pos: {...c.pos}, stickers: {...c.stickers} }));
+}
+
+function applySimMove(cs, moveFace, isCW) {
+  const def = MOVE_DEFS[moveFace];
+  cs.filter(c => c.pos[def.layer] === def.value).forEach(c => {
+    c.pos      = isCW ? applyPosCW(c.pos, moveFace)              : applyPosCCW(c.pos, moveFace);
+    c.stickers = isCW ? applyFaceMap(c.stickers, def.faceMap)    : applyFaceMapCCW(c.stickers, def.faceMap);
+  });
+}
+
+function scoreState(cs) {
+  let score = 0;
+  for (const face of FACES) {
+    const s = getFaceStickersOrderedFrom(cs, face);
+    for (const line of WIN_LINES) {
+      const vals = line.map(i => s[i]);
+      const oN = vals.filter(v => v==='O').length;
+      const xN = vals.filter(v => v==='X').length;
+      if (xN === 0) score += oN * oN;           // progress toward O win
+      if (oN === 0) score -= xN * xN * 1.3;     // urgency of X threats
+    }
+  }
+  return score;
+}
+
+// ── EASY: purely random ───────────────────────────────────────────────────────
+function aiComputeRotationEasy(validFaces) {
+  const moves = validFaces.flatMap(f => [{face:f,cw:true},{face:f,cw:false}]);
+  return moves[Math.floor(Math.random() * moves.length)] ?? {face:'U', cw:true};
+}
+function aiComputePlacementEasy() {
+  const empty = [];
+  cubies.forEach((c, ci) => {
+    FACES.forEach(face => { if (c.stickers[face] === 'empty') empty.push({ci, face}); });
+  });
+  if (empty.length === 0) return null;
+  return empty[Math.floor(Math.random() * empty.length)];
+}
+
+// ── MEDIUM: one-ply score-based (O rotates/places, considers X's best response) ─
+function aiComputeRotation(validFaces) {
+  const validMoves = validFaces.flatMap(f => [{face:f,cw:true},{face:f,cw:false}]);
+  if (validMoves.length === 0) return {face:'U', cw:true};
+  let bestScore = -Infinity, best = null, fallback = null;
+  for (const {face, cw} of validMoves) {
+    const cs = cloneCubiesState();
+    applySimMove(cs, face, cw);
+    const winner = checkWinIn(cs);
+    if (winner === 'O') return {face, cw};
+    if (winner === 'X') { fallback = fallback ?? {face, cw}; continue; }
+    const score = scoreState(cs);
+    if (score > bestScore) { bestScore = score; best = {face, cw}; }
+  }
+  return best ?? fallback ?? validMoves[0];
+}
+function aiComputePlacement() {
+  const empty = [];
+  cubies.forEach((c, ci) => {
+    FACES.forEach(face => { if (c.stickers[face] === 'empty') empty.push({ci, face}); });
+  });
+  if (empty.length === 0) return null;
+  let bestScore = -Infinity, best = null;
+  for (const {ci, face} of empty) {
+    const cs = cloneCubiesState();
+    cs[ci].stickers[face] = 'O';
+    const xFaces = getValidFaces(cubies[ci].pos);
+    let worstScore = Infinity;
+    for (const f of xFaces) {
+      for (const cw of [true, false]) {
+        const cs2 = cs.map(c => ({pos:{...c.pos}, stickers:{...c.stickers}}));
+        applySimMove(cs2, f, cw);
+        const w = checkWinIn(cs2);
+        if (w === 'O') { worstScore = Infinity; break; }
+        const s = scoreState(cs2);
+        if (s < worstScore) worstScore = s;
+      }
+      if (worstScore === Infinity) break;
+    }
+    if (worstScore > bestScore) { bestScore = worstScore; best = {ci, face}; }
+  }
+  return best ?? empty[0];
+}
+
+// ── HARD: two-ply look-ahead (O acts, then simulates X's best placement+rotation) ─
+function aiComputeRotationHard(validFaces) {
+  const validMoves = validFaces.flatMap(f => [{face:f,cw:true},{face:f,cw:false}]);
+  if (validMoves.length === 0) return {face:'U', cw:true};
+  let bestScore = -Infinity, best = null, fallback = null;
+  for (const {face, cw} of validMoves) {
+    const cs1 = cloneCubiesState();
+    applySimMove(cs1, face, cw);
+    const w1 = checkWinIn(cs1);
+    if (w1 === 'O') return {face, cw};
+    if (w1 === 'X') { fallback = fallback ?? {face, cw}; continue; }
+    // Simulate X's best placement + rotation response
+    let xBest = -Infinity;
+    cs1.forEach((c, xci) => {
+      FACES.forEach(xf => {
+        if (c.stickers[xf] !== 'empty') return;
+        const cs2 = cs1.map(c2 => ({pos:{...c2.pos}, stickers:{...c2.stickers}}));
+        cs2[xci].stickers[xf] = 'X';
+        getValidFaces(cs2[xci].pos).forEach(rf => {
+          [true, false].forEach(rcw => {
+            const cs3 = cs2.map(c2 => ({pos:{...c2.pos}, stickers:{...c2.stickers}}));
+            applySimMove(cs3, rf, rcw);
+            const w3 = checkWinIn(cs3);
+            const s = w3 === 'X' ? 99999 : w3 === 'O' ? -99999 : -scoreState(cs3);
+            if (s > xBest) xBest = s;
+          });
+        });
+      });
+    });
+    const oScore = -xBest; // O minimises X's best outcome
+    if (oScore > bestScore) { bestScore = oScore; best = {face, cw}; }
+  }
+  return best ?? fallback ?? validMoves[0];
+}
+function aiComputePlacementHard() {
+  const empty = [];
+  cubies.forEach((c, ci) => {
+    FACES.forEach(face => { if (c.stickers[face] === 'empty') empty.push({ci, face}); });
+  });
+  if (empty.length === 0) return null;
+  let bestScore = -Infinity, best = null;
+  for (const {ci, face} of empty) {
+    const cs = cloneCubiesState();
+    cs[ci].stickers[face] = 'O';
+    const xFaces = getValidFaces(cubies[ci].pos);
+    let worstScore = Infinity;
+    for (const f of xFaces) {
+      for (const cw of [true, false]) {
+        const cs2 = cs.map(c => ({pos:{...c.pos}, stickers:{...c.stickers}}));
+        applySimMove(cs2, f, cw);
+        const w = checkWinIn(cs2);
+        if (w === 'O') { worstScore = Infinity; break; }
+        // Explicitly penalise rotations that let X win — medium misses this
+        const s = w === 'X' ? -99999 : scoreState(cs2);
+        if (s < worstScore) worstScore = s;
+      }
+      if (worstScore === Infinity) break;
+    }
+    if (worstScore > bestScore) { bestScore = worstScore; best = {ci, face}; }
+  }
+  return best ?? empty[0];
+}
+
+// ── Dispatchers ───────────────────────────────────────────────────────────────
+function aiRotateTurn(validFaces) {
+  if (gamePhase !== 'MOVE' || currentPlayer !== 'O' || aiDifficulty === 'off') return;
+  setTimeout(() => {
+    if (gamePhase !== 'MOVE' || currentPlayer !== 'O' || aiDifficulty === 'off') return;
+    const move = aiDifficulty === 'easy'  ? aiComputeRotationEasy(validFaces)
+               : aiDifficulty === 'hard'  ? aiComputeRotationHard(validFaces)
+               :                            aiComputeRotation(validFaces);
+    gamePhase = 'ANIMATING';
+    updateUI();
+    executeMoveAnimation(move.face, move.cw);
+  }, 600);
+}
+
+function aiPlace() {
+  if (gamePhase !== 'PLACE' || currentPlayer !== 'O' || aiDifficulty === 'off') return;
+  setTimeout(() => {
+    if (gamePhase !== 'PLACE' || currentPlayer !== 'O' || aiDifficulty === 'off') return;
+    const placement = aiDifficulty === 'easy' ? aiComputePlacementEasy()
+                    : aiDifficulty === 'hard'  ? aiComputePlacementHard()
+                    :                            aiComputePlacement();
+    if (!placement) return;
+
+    const cubie = cubies[placement.ci];
+    cubie.stickers[placement.face] = 'O';
+    const sm = cubie.stickerMeshes[placement.face];
+    if (sm) { sm.material.map = textureCache['O']; sm.material.needsUpdate = true; }
+
+    markedCubieIndex  = placement.ci;
+    currentPlayer     = 'X'; // X rotates now
+    gamePhase         = 'MOVE';
+    currentValidFaces = getValidFaces(cubies[placement.ci].pos);
+    showMarkedCubieOutline(placement.ci);
+    updateUI();
+    // X is human — waits for button click
+  }, 600);
+}
+
+// ─── UI ───────────────────────────────────────────────────────────────────────
+function updateUI() {
+  const badge = document.getElementById('player-badge');
+  const text  = document.getElementById('status-text');
+
+  if (gamePhase === 'PLACE') {
+    setMoveButtonsEnabled(false);
+    badge.className   = currentPlayer;
+    badge.textContent = currentPlayer;
+    if (aiDifficulty !== 'off' && currentPlayer === 'O') {
+      text.textContent = `AI (O) is choosing where to place… [${aiDifficulty}]`;
+    } else {
+      text.textContent = `Player ${currentPlayer} — Click any white sticker to place your mark`;
+    }
+  } else if (gamePhase === 'MOVE') {
+    // currentPlayer is the rotator; only enable their valid face buttons
+    setValidMoveButtons(currentValidFaces);
+    badge.className   = currentPlayer;
+    badge.textContent = currentPlayer;
+    if (aiDifficulty !== 'off' && currentPlayer === 'O') {
+      text.textContent = `AI (O) is choosing a rotation… [${aiDifficulty}]`;
+    } else {
+      text.textContent = `Player ${currentPlayer} — Rotate a layer containing the glowing cubie`;
+    }
+  } else if (gamePhase === 'ANIMATING') {
+    setMoveButtonsEnabled(false);
+    badge.className   = currentPlayer;
+    badge.textContent = currentPlayer;
+    text.textContent  = 'Rotating…';
+  } else if (gamePhase === 'GAME_OVER') {
+    setMoveButtonsEnabled(false);
+    if (gameWinner === 'draw') {
+      badge.className   = 'draw';
+      badge.textContent = '=';
+      text.textContent  = "It's a draw!";
+    } else {
+      badge.className   = gameWinner;
+      badge.textContent = gameWinner;
+      text.textContent  = `Player ${gameWinner} wins!`;
+    }
+  }
+}
+
+function showWinner(winner) {
+  const overlay = document.getElementById('overlay');
+  const msg     = document.getElementById('overlay-message');
+  msg.textContent = winner === 'draw' ? "It's a Draw!" : `Player ${winner} Wins!`;
+  msg.className   = winner;
+  overlay.classList.remove('hidden');
+}
+
+// ─── New game ─────────────────────────────────────────────────────────────────
+function newGame() {
+  document.getElementById('overlay').classList.add('hidden');
+  clearMarkedCubieOutline();
+  clearWinLine();
+  markedCubieIndex  = null;
+  gameWinner        = null;
+  currentValidFaces = [];
+  // Clear meshes
+  cubies.forEach(c => {
+    if (c.boxMesh) orbitGroup.remove(c.boxMesh);
+    Object.values(c.stickerMeshes || {}).forEach(m => orbitGroup.remove(m));
+  });
+  orbitGroup.rotation.set(0.3, 0.5, 0);
+  currentPlayer = 'X';
+  gamePhase     = 'PLACE';
+  initCubies();
+  buildCubeMeshes();
+  buildStickerMeshes();
+  updateUI();
+}
+
+document.getElementById('new-game-btn').addEventListener('click', newGame);
+
+document.getElementById('ai-toggle-btn').addEventListener('click', () => {
+  const cycle = ['off', 'easy', 'medium', 'hard'];
+  aiDifficulty = cycle[(cycle.indexOf(aiDifficulty) + 1) % cycle.length];
+  const btn = document.getElementById('ai-toggle-btn');
+  btn.className   = `ai-${aiDifficulty}`;
+  btn.textContent = aiDifficulty === 'off' ? 'vs AI' : `AI: ${aiDifficulty.charAt(0).toUpperCase() + aiDifficulty.slice(1)}`;
+  // Kick off AI immediately if it's already O's turn mid-game
+  if (aiDifficulty !== 'off' && currentPlayer === 'O') {
+    updateUI();
+    if (gamePhase === 'PLACE') aiPlace();
+    else if (gamePhase === 'MOVE') aiRotateTurn(currentValidFaces);
+  } else {
+    updateUI();
+  }
+});
+
+// ─── Render loop ──────────────────────────────────────────────────────────────
+function renderLoop() {
+  requestAnimationFrame(renderLoop);
+  renderer.render(scene, camera);
+}
+
+// ─── Bootstrap ────────────────────────────────────────────────────────────────
+function main() {
+  // Build textures
+  textureCache.empty = makeTexture('empty');
+  textureCache.X     = makeTexture('X');
+  textureCache.O     = makeTexture('O');
+
+  initScene();
+  buildArrowMeshes();
+  buildSideArrowMeshes();
+  initCubies();
+  buildCubeMeshes();
+  buildStickerMeshes();
+  buildMoveButtons();
+  initDragControls();
+
+  // Slight initial tilt so cube looks 3D right away
+  orbitGroup.rotation.set(0.3, 0.5, 0);
+
+  updateUI();
+  renderLoop();
+}
+
+main();
+</script>
+</body>
+</html>
